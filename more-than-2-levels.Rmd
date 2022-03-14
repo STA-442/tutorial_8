@@ -1,0 +1,564 @@
+---
+title: "More than two levels"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+---
+
+```{r setup, include=FALSE}
+## Global options
+knitr::opts_chunk$set(cache = TRUE)
+```
+
+
+
+For this tutorial, we will a subset of the Himalayan Database, which is available through tidy tuesday. The full data and analysis can be [found here](https://github.com/rfordatascience/tidytuesday/tree/master/data/2020/2020-09-22/). 
+
+The data contains information on various climbing expeditions of mountain peaks. There are 2076 rows and 24 variables. Data is collected at the climbing level. 
+
+There are 2076 unique climbers spread across 200 expeditions of 46 different mountain peaks. Here is an example of the data structure looking at the 12 climbers taking part in 4 expeditions of 2 mountain peaks. 
+
+```{r, eval=F, echo=F, message=F, warning=F}
+library(DiagrammeR)
+
+m <- grViz("
+digraph example1 {
+
+  # a 'graph' statement
+  graph [overlap = true, fontsize = 10]
+
+  # several 'node' statements
+  node [shape = box,
+        fontname = Helvetica]
+  Population[label=<All mountain peaks>]
+  
+   node [shape = box,
+        fontname = Helvetica]
+  Group1[label=<Peak<SUB>1</SUB>>];
+  Group2[label=<Peak<SUB>2</SUB>>]
+  
+  node [shape = box,
+        fontname = Helvetica]
+  E1[label=<Exp<SUB>1</SUB>>];
+  E2[label=<Exp<SUB>2</SUB>>]; 
+  E3[label=<Exp<SUB>3</SUB>>];
+  E4[label=<Exp<SUB>4</SUB>>];
+  
+  node [shape = circle,
+        fixedsize = true,
+        width = 0.9] // sets as circles
+  climber1[label=<climber<SUB>1</SUB>>]; 
+  climber2[label=<climber<SUB>2</SUB>>]; 
+  
+  climber3[label=<climber<SUB>3</SUB>>]; 
+  climber4[label=<climber<SUB>4</SUB>>]; 
+  
+  climber5[label=<climber<SUB>5</SUB>>]; 
+  climber6[label=<climber<SUB>6</SUB>>]; 
+  
+  climber7[label=<climber<SUB>7</SUB>>]; 
+  climber8[label=<climber<SUB>8</SUB>>];  
+  
+
+  # several 'edge' statements
+  Population->Group1 Population->Group2 
+  Group1->E1 Group1->E2
+  Group2->E3 Group2->E4
+  
+  E1 -> climber1 E1 -> climber2 
+  E2 -> climber3 E2 -> climber4 
+  E3 -> climber5 E3 -> climber6 
+  E4 -> climber7 E4 -> climber8 
+  
+}
+")
+
+widgetframe::frameWidget(m)
+
+```
+
+
+You can see there are 2 levels of nesting. At the top of the structure is the population of all mountain peaks. From there we have the sampled peaks that were measured, and under that, the expeditions that took place, and finally the climbers that took part in the expedition. We can have variance within and between all the groups. In this short tutorial, we will explore this data and fit a multilevel model that takes account of this more complex strucure.
+
+The oucome for this exercise will be whether the climber successfully reached the destination, and we will model the probability using a multilevel logistic regression. 
+
+
+## The data
+
+We begin as usuall by reading in the data and doing some basic exploration. 
+
+
+```{r}
+# the packages required for the analysis
+library(tidyverse)
+library(lme4)
+
+# the data
+climbers <- readr::read_csv('data/climbers.csv')
+
+
+# the dimension
+dim(climbers)
+
+
+# a glimpse at the data
+glimpse(climbers)
+
+# the first 10 observations
+DT::datatable(head(climbers, 10),
+              options = list(scrollX=T),
+              caption = "The first 10 observations for the climbing data")
+
+```
+
+
+The data contains the following variables:
+- `expedition_id`: unique expedition identifier
+- `member_id`:  unique climber identifier       
+- `peak_id`: unique identifier of the expedition's destination peak
+- `peak_name`: name of the expedition's destination peak            
+- `year`: year of expedition 
+- `season`: season of expedition (Autumn, Spring, Summer, Winter)
+- `sex`: climber gender identity which the database oversimplifies to a binary category               
+- `age`: climber age
+- `citizenship`: climber citizenship
+- `expedition_role` : climber's role in the expedition (eg: Co-Leader)
+- `hired`: whether the climber was a hired member of the expedition            
+- `highpoint_metres`: the destination peak's highpoint (metres)
+- `success`: whether the climber successfully reached the destination
+- `solo`: whether the climber was on a solo expedition       
+- `oxygen_used`: whether the climber utilized supplemental oxygen   
+- `died`: whether the climber died during the expedition            
+- `injured`: whether the climber was injured on the expedition         
+- `count`: number of climbers in the expedition             
+- `height_metres`: height of the peak in meters  
+- `first_ascent_year`: the year of the first recorded summit of the peak
+
+
+We have variables recorded at the various nested levels of the model, for example `age`, `citizenship`, `expedition role` at the level of the climber; `solo` and `count` at the level of the expedition.
+
+
+### Data Exploration
+
+
+```{r}
+
+climbers %>%
+  mutate(success = ifelse(success == 1, "Success", "fail")) %>% 
+  count(success) %>% 
+  mutate(percentage = n/sum(n)) %>%
+  ggplot(aes(success, n,
+             label = scales::percent(percentage))) +
+  geom_bar(stat= "identity") +
+  geom_col(width=0.5) +
+  geom_text(nudge_y= 50,
+            color="black",
+            size = 5,
+            fontface="bold") +
+  scale_y_continuous(breaks = seq(0, 1500, 100)) +
+  labs(y = "N",
+       title = "Distribution of success and failures",
+       subtitle = "Across all 200 expeditions") +
+  theme_bw()
+
+
+
+```
+
+
+Each expedition is part of a team, so it would be a mistake to ignore this grouping structure. Below we look at the success rate within each expedition
+
+
+```{r}
+
+climbers %>% 
+  group_by(expedition_id) %>% 
+  summarize(success_rate = mean(success)) %>% 
+  ggplot(aes(x = success_rate)) + 
+  geom_histogram(color = "white") +
+  geom_vline(xintercept = mean(climbers$success), color = "blue") +
+  geom_text(x = mean(climbers$success), 
+            y = 60, 
+            label = "Mean Success for all climbers", color = "blue")
+
+
+```
+
+
+We can see that there is a good degree of variability across expeditions in terms of the success rate. 
+
+We will also look at how some variables affect success rate. Below we look at age and use of oxygen
+
+```{r}
+
+p1 <- climbers %>% 
+  ggplot(aes(age)) +
+  geom_histogram(aes(y = ..density..)) +
+  geom_density()
+
+p2 <- climbers %>% 
+  mutate(success = ifelse(success == 1, "Success", "fail")) %>% 
+  ggplot(aes(success , fill = oxygen_used)) +
+  geom_bar(stat= 'count', position = 'dodge') +
+  labs(x = "Success", y = "Oxygen used during climb",
+       title = "Success rate by oxygen use")
+
+p3 <- climbers %>% 
+  group_by(age, oxygen_used) %>% 
+  summarize(success_rate = mean(success)) %>% 
+  ggplot(aes(age, success_rate, color = oxygen_used)) +
+  geom_point() +
+  geom_smooth(method="lm") +
+  labs(title = "Success rate by age and oxygen use",
+       y = "Success rate", x = "Age",
+       color = "Oxygen Use")
+
+p1
+p2
+p3
+
+```
+
+
+The above plots provide evidence that the success rate depends on both age and oxygen use. People who are younger have higher success rates than those who are older, and oxygen use has a much higher success rate, than non oxygen use. It might be fair to think that the effect of both of these variables vary by expedition as well. 
+
+
+### Ignoring grouping structure.
+
+
+We begin by fitting a model that ignores the grouping structure in the data
+
+
+```{r}
+
+log_reg <- glm(success ~ age + oxygen_used, data = climbers,
+               family = "binomial")
+
+summary(log_reg)
+
+```
+
+Here, we see that:
+
+- While controlling for oxygen use, each additional year of age is assoicated with a 0.02 decrease in the log odds of success. 
+- While controlling for age, the use of oxygen is associated with a 2.90 increase in the log odds of success (Odds ratio = 18.09)
+
+
+
+### Partial pooling model
+
+
+Next we fit a partial pooling model for this data. That is we fit the model
+
+
+$$Pr(y_i = success) =log\Big(\frac{\pi_{ij}}{1 - \pi_{ij}}\Big) =  logit^{-1}(\alpha_{i[j]} + \beta_1 X_{i[j]1} + \beta_2 X_{i[j]2})$$
+
+$$\alpha_j \sim N(\alpha_\mu, \sigma_\alpha^2)$$
+
+Before fitting the model, let's think about the parameters we are estimating
+
+
+- The expedition specific intercepts ($\alpha_j$) tell us the underlying success rates for each expedition $j = 1, \ldots, 200$. This allows some expeditions to be more or less successful than others.
+
+- We are assuming that the intercepts are normally distributed with mean $\alpha_\mu$ and sd $\sigma_\alpha$. These parameters will be estimated from the data.
+
+- $\beta_1$ is the fixed effect of age across all expeditions. 
+- $\beta_2$ is the fixed effect of oxygen use across all expeditions.
+
+
+
+
+
+```{r}
+
+mlm_reg <- glmer(success ~ age + oxygen_used + (1|expedition_id), data = climbers,
+               family = "binomial")
+
+summary(mlm_reg)
+
+```
+
+Interpretation:
+
+- The global effect for age is `r `round(fixef(mlm_reg)[2], 2)`. While controlling for whether or not a climber uses oxygen, the likelihood of success decreases with age. The odds of successfully summiting to the peak drop by 4.7% for each year increase. 
+
+- The global effect for oxygen use is `r `round(fixef(mlm_reg)[3], 2)`. While controlling for whether or not a climber uses oxygen, the likelihood of success decreases with age. We estimate a 466 fold increase in the odds of success for climbers that use oxygen while controlling for age. 
+
+- The intercept $\mu_\alpha$ is estimated to be `r `round(fixef(mlm_reg)[1], 2)`. 
+
+- Our estimate $\sigma_\alpha$ measures the amount of variation in success between expeditions. It is estimated as 3.715. Is this large?
+
+We don't have $\sigma_y$ in the logistic case to measure the intraclass correlation. How do we measure ICC for logistic regression? We can make use of the variance from a logistic distribution is given by $\pi^3/3$ and calculate the ICC as
+
+$$ICC = \frac{\sigma_\alpha^2}{(\sigma_\alpha^2 + \pi^3/3)}$$
+
+In this case we find
+
+```{r}
+ICC_calc <- (3.715^2)/(3.715^2 + (pi^2/3))
+```
+
+We have evidence that much of the variance is explained by differences between expeditions, which is unsurprising. 
+
+
+
+#### Predictions for a new expedition
+
+Let's generate predictions for a new expedition in two ways
+
+- Using the predict method
+
+- Using the simulate method.
+
+Here we will create 4 hypothetical new climbers on a new expedition
+
+- Climber 1 is 25 years old and does not use oxygen
+- Climber 2 is 25 years old and uses oxygen
+- Climber 3 is 55 years old and does not use oxygen
+- Climber 4 is 55 years old and uses oxygen
+
+Let's create these data and predict the probability of survival
+
+
+```{r}
+
+new_expedition<- tribble(
+  ~ "age", ~ "oxygen_used", ~ "expedition_id",
+  25, FALSE, "new",
+  25, TRUE, "new",
+  55, FALSE, "new",
+  55, TRUE, "new"
+)
+
+# log odds scale
+predict(mlm_reg, newdata = new_expedition, allow.new.levels = T)
+
+
+# probability scale
+predict(mlm_reg, newdata = new_expedition, allow.new.levels = T,
+        type = "response")
+```
+
+We see some large differences in the estimated survival rates for these new climbers. Climber one has an estimated 4.9% probability of survival, while climber 2 is estimated at 96%, climber 3 is 1.2% and climber 4 is 85.3%
+
+We see that by far the largest impact on survival is the use of oxygen. 
+
+
+Now lets use simulation to predict a new expedition. In class and in assignments I have had you write your own simulation function, but there is in fact a simulation function that comes from the `lme4` package. We can pass new data to get simulations for a new expedition. 
+
+```{r}
+
+new_expedition<- tribble(
+  ~ "age", ~ "oxygen_used", ~ "expedition_id",
+  25, FALSE, "new",
+  25, TRUE, "new",
+  55, FALSE, "new",
+  55, TRUE, "new"
+)
+
+# simulate 250 times
+sims <- simulate(mlm_reg, 
+                 newdata = new_expedition, 
+                 allow.new.levels = T, 
+                 nsim = 1000)
+
+apply(sims, 1, function(x) {
+  sum(x/length(x))
+})
+```
+
+
+Well, these estimates look wildly different from those using the `predict()` method. What is going on?
+
+Well the `predict()` function using the fixed effects only to generate a new prediction for each climber. The simulate function is non-deterministic. It begins by sampling random effect values for each expedition, since we have uncertainty in what those might be for a new expedition, and then we use the fixed effects to generate a probability of success. 
+
+We can mimic the predict method in the simulate method by setting `re.form=NULL`.
+
+```{r}
+
+new_expedition<- tribble(
+  ~ "age", ~ "oxygen_used", ~ "expedition_id",
+  25, FALSE, "new",
+  25, TRUE, "new",
+  55, FALSE, "new",
+  55, TRUE, "new"
+)
+
+# simulate 250 times
+sims <- simulate(mlm_reg, 
+                 newdata = new_expedition, 
+                 re.form = NULL, # don't use random effects
+                 allow.new.levels = T, 
+                 nsim = 1000)
+
+apply(sims, 1, function(x) {
+  sum(x/length(x))
+})
+```
+
+
+This numbers are closer to the predict numbers. 
+
+
+## More than one level of variation
+
+It might be fair to assume that there will be a further cause for variation, which is the mountain peak that is being climbed. Below we plot success rates by expedition and peak
+
+Each point in the plot below is the success rate of an expedition within a peak. The blue dots are the success rates for each peak. Some peaks seem to have higher or lower success rates than others which is not surprising. 
+
+```{r, warning=F, message=F}
+
+peak_success <- climbers %>% 
+  group_by(peak_name) %>% 
+  summarize(peak_success_rate = sum(success)/n())
+climbers %>% 
+  group_by(peak_name, expedition_id) %>% 
+  summarize(n_success = sum(success),
+            n_fail = sum(success == 0),
+            success_rate = n_success/n()) %>% 
+  left_join(peak_success, by = 'peak_name') %>% 
+  mutate(peak_expedition = paste(peak_name, expedition_id)) %>% 
+  ggplot(aes(peak_expedition, success_rate)) +
+    geom_jitter() +
+  geom_point(aes(peak_expedition, peak_success_rate), color = "blue") +
+  coord_flip()
+
+```
+
+
+We can instead fit the following model:
+
+
+$$\log\Big(\frac{\pi_{ijk}}{1 - \pi_{ijk}}\Big) = \alpha_{0{jk}} +  \beta_1 X_{ijk1} + \beta_2 X_{ijk2}$$
+
+- Where i indexes the climber, j indexes the expedition, and k indexes the mountain peak
+
+and
+
+$$\alpha_{0{jk}} = \alpha_0 + e_{0j} + p_{0k} $$
+
+- Where $\alpha_0$ is a grand intercept
+- $e_{0j}$ are deviances by expedition 
+- $p_{0k}$ are deviances by peak
+
+We further assume that
+
+
+- $e_{0j} \sim N(0, \sigma_e^2)$
+- $p_{0j} \sim N(0, \sigma_p^2)$
+
+- $\sigma_e^2$ is the variability in success rates from expedition to expedition within a peak
+- $\sigma_p^2$ is the variability in success rates between peaks
+
+
+There are two equivalent ways to specify this model using R.
+
+
+```{r}
+
+mlm_reg_2_a <- glmer(success ~ age + oxygen_used + (1|peak_id/expedition_id), data = climbers,
+               family = "binomial")
+
+mlm_reg_2_b <- glmer(success ~ age + oxygen_used + (1|peak_id) +
+                       (1|expedition_id:peak_id), data = climbers,
+               family = "binomial")
+
+```
+
+
+You can explore these models on your own to see that they do in fact give the same results. 
+
+
+Let's have a look at the estimates from this model. We will use summary as always, but we can also use the broom.mixed package to extract fixed or random effects from the model. 
+
+
+```{r}
+# using summary
+summary(mlm_reg_2_a)
+
+
+# using tidy from broom.mixed
+broom.mixed::tidy(mlm_reg_2_a, effects = 'fixed')
+```
+
+
+Let's look at the variability estimates between the two models we have fit so far
+
+
+```{r}
+m1  <- broom.mixed::tidy(mlm_reg, effects = 'ran_pars')
+m2 <- broom.mixed::tidy(mlm_reg_2_a, effects = 'ran_pars')
+
+m1
+m2
+
+```
+
+What can we say about our models:
+
+-  Our first model says the variability in success rates from expedition to expedition is estimated at 3.72. This variability is redistributed in our new model to both between peaks and expeditions within peaks. 
+- In our second model $\sigma_p = 1.62$ and $\sigma_e = 3.13$. This implies that there are greater differences between expeditions on the same peak than between peaks. 
+
+- Notice that $\sigma_e=3.72$ in our first model, but drops to $\sigma_e=1.62$ in our second model. To make sense of this note that $\sigma_e$ measures the variability in success across all expeditions in our first model, but the variability across expeditions within the same peak in our new model. Success rates of expeditions on the same peak are more consistent that the outcomes of expeditions across all peaks
+
+
+
+We can extract the group level estimates of $e_{0j}$ and $p_{0k}$ using either ranef from the lme4 package or we can use tidy from the broom.mixed package as follows
+
+
+```{r}
+
+
+group_estimates <- broom.mixed::tidy(mlm_reg_2_a, effects = "ran_vals") %>% 
+    select(level, group, estimate)
+
+head(group_estimates)
+
+```
+
+
+We can look at the first two estimates of the peak level estimates
+
+```{r}
+group_estimates %>% 
+  filter(group == "peak_id") %>% 
+  head(2)
+
+```
+
+We see that peak_id = "AMAD" (i.e. Ama Dablam) has a higher baseline success rate than peak_id = "ANN1" (i.e. Annapurna I).
+
+Let's look at some expeditions within AMAD (Ama Dablam.)
+
+```{r}
+climbers %>% 
+  filter(peak_id == "AMAD") %>% 
+  distinct(expedition_id)
+
+
+# trying a couple at random
+group_estimates %>% 
+  filter(level %in% c("AMAD81101", "AMAD05338"))
+
+```
+
+We see that within peak AMAD, that the expeditions AMAD81101 and AMAD05338 had higher success rates. The base success rates for these expeditions are found by
+
+$$\alpha_{0{jk}} = \alpha_0 + e_{0j} + p_{0k} $$
+
+So, for AMAD81101, we have
+
+- Intercept is estimated as: -1.87 + 3.23 + 1.34
+
+
+Here are a few questions and exercises to think about.
+
+- If a climber joins a new expedition to AMAD, what is their estimated intercept? Write out these equations using the notation above
+
+- If climbers join a new expedition to a peak not seen in our data, what is their estimated intercept? Write out these equations using the notation above
+
+- Try adding in group level predictors to see if you can improve the estimated intercepts in this model. 
+
+
+

@@ -1,0 +1,262 @@
+---
+title: "Basic Survival Analysis"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+This very short tutorial is to show some of the survival analysis functions in R. We will go into much more detail next week.
+
+## Introduction
+
+And now for something completely different. So far in this class we have looked at outcomes where we have complete knowledge of the outcome in question. For example, we know the income of someone with a certain height and gender, or, we know the number of baseline unprotected sex acts for a participant in an intervention. What do we do if we don't completely observe the outcome?
+
+For example, we might be interested in the time until a tumour reappears in patients that are in remission. If we try a study like this, we might:
+
+1. Observe that a patient regrows a tumour
+2. Observe that a patient does not regrow a tumour at the end of some specified time interval
+3. We don't observe the outcome. This occurs for one of three reasons
+    - A subject does not experience the outcome before a study ends (maybe they do shortly after)
+    - A person is lost to follow up during a study (they move, they die due to some other cause, etc...)
+    - A person withdraws from the stud
+
+In this case, we say that patients in (3) above are censored. In this case we call the censoring right-censoring. Other types of censoring exist and we will look at these briefly. 
+
+In fact, if (3) above did not exist, we could use standard regression techniques to model time to some event. In the face of censoring, we need alternative methods. 
+
+
+## Terminology and Notation
+
+We say that $T$ denotes our outcome variable and $T \ge 0$. 
+
+We define the survival function as 
+
+$$S(t) = Pr(T > t) = 1-F(t)$$
+
+
+- The funcion $S(t)$ gives the probability that a subject will survive past t
+
+- t ranges from $0$ to $\infty$
+
+- As $t$ increases
+  - $S(t)$ is non-increasing
+  - At time $t=0$, we have $S(t)= 1$ (everyone is alive at the start of the study)
+  - at time $t=\infty$, we have $S(t)= 0$ (We all must die at some point)
+  
+  
+  
+There are two other main functions of interest:
+
+$$\text{The Hazard Function} = h(t) = \lim_{\Delta t\to\infty} \frac{Pr(t < T \le (t + \Delta t)| T > t}{\Delta t} = \frac{f(t)}{S(t)}$$
+
+This is the instantaneous rate of events, given no previous events. 
+
+The cumulative hazard describes the acumulated risk up to time t
+
+$$H(t) = \int_{0}^{t} h(u) \,du$$
+
+If we know any of one of the functions we can derive the others
+
+
+- $h(t) = -\frac{\partial log(S(t))}{\partial t}$
+
+- $H(t) = -log(S(t))$
+
+- $h(t) = exp(-H(t)$
+
+
+## Example in R
+
+In R, there are many purpose built packages for fitting survival models. In this short tutorial, we will expose you do the [`survival` package](https://github.com/therneau/survival).
+
+This package can be installed from CRAN:
+
+
+```{r, eval=F}
+install.packages('survival')
+```
+
+This package comes with a data set we will use for this tutorial. It is the ovarian data and can be loaded as follows
+
+```{r}
+library(survival)
+
+ovarian <- survival::ovarian
+
+```
+
+
+
+This data set comes from a randomised trial comparing two treatments for ovarian cancer. The following variables are observed
+
+- `futime`: survival or censoring time
+- `fustat`: censoring status
+- `age`: in years
+- `resid.ds`: residual disease present (1=no,2=yes)
+- `rx`: 	treatment group
+- `ecog.ps`: ECOG performance status (1 is better, see reference)
+
+```{r}
+library(dplyr)
+library(gt)
+
+ovarian %>% 
+  head() %>% 
+  gt() %>% 
+  tab_header(title = "First 6 observations from the Ovarian Cancer data",
+             subtitle = "26 observations on 6 variables")
+
+```
+
+This is a small set of data (only 26 observations). We can compute the survival function as:
+
+
+```{r}
+
+#survival function
+
+s <- Surv(ovarian$futime, ovarian$fustat,
+          type = "right")
+# What class of object is this
+class(s)
+
+# is it a survival object
+is.Surv(s)
+
+# What is in the object
+print(s)
+```
+
+See "?Surv" for more examples and more information on the arguments. In short, we have specified the time ($t$) as, the censoring mechanism (`fustat`) and the type of censoring (`right`).
+
+
+### Kaplan-Meier estimator
+
+The Kaplan-Meier estimator is the first approach to estimating survival curves. We will see more advanced models that make different assumptions on the data and its generating process. 
+
+What can we get with the KM estimator
+
+- We can compute survival quantiles
+- We can get expectations (expected failure time)
+- Equations for $S(t)$, $H(t)$, and $h(t)$ described above
+
+Below we use the survfit function to get the KM estimates. This is a general purpose function that can be used to estimate more complex models.
+
+```{r}
+
+km_fit <- survfit(Surv(futime, fustat) ~ 1, data=ovarian)
+
+summary(km_fit)
+```
+
+the `survfit` functions takes a formula as its first argument. The argument takes a survival object on the left hand side and any predictors on the right hand side. Here we specify `Surv(futime, fustat) ~ 1` as our formula. 
+
+By default, the estimates are displayed for failure times observed in the data. We can specify times we want estimated using the `times` argument.
+
+
+
+```{r}
+
+km_fit <- survfit(Surv(futime, fustat) ~ 1, data=ovarian)
+
+summary(km_fit, times = c(1, 50, 100,  200, 300))
+```
+
+Above we survival probability estimated at 1 day, 50 days, 100 days, 200 days, and 300 days. 
+
+We can plot the KM curve using `autoplot` (for a ggplot object) or `plot` (if we want base R). To use the autoplot function with survival fit objects we need to install the [ggfortify package](https://cran.r-project.org/web/packages/ggfortify/vignettes/plot_surv.html). 
+
+
+```{r,eval=F}
+install.packages('ggfortify')
+
+```
+
+
+```{r, message=F, warning=F}
+library(ggplot2)
+library(ggfortify)
+autoplot(km_fit)
+
+plot(km_fit)
+
+```
+
+In each case, the plot shows the estimated survival and confidence intervals. 
+
+We can use an input variable to get survival curves estimated for different treatment groups. 
+
+```{r}
+
+km_fit_tx <- survfit(Surv(futime, fustat) ~ factor(rx), data=ovarian)
+
+summary(km_fit_tx)
+```
+
+
+We see that separate summaries are printed for the two groups. We can use the same plot functions as follows:
+
+```{r, message=F, warning=F}
+
+autoplot(km_fit_tx)
+
+plot(km_fit_tx)
+
+```
+
+With such small data we see a large confidence intervals. 
+
+
+
+## Next time
+
+This was a very basic introduction to playing with survival objects in R.
+
+Next time we will look at the Cox proportional hazards model followed by adding more parametric assumptions to our survival curves. Specifically we will assume that they are
+
+- Exponential
+- Weibull
+- Gamma 
+- log-normal
+
+
+To get you started, for those interested, I present the following without comment.
+
+Cox proportional hazards can be fit using:
+
+
+```{r}
+# fix he cox model
+cox_fit <- coxph(Surv(futime, fustat) ~ factor(rx) + age , 
+             data = ovarian)
+summary(cox_fit)
+
+# plot the cox model
+d.coxph <- survfit(cox_fit)
+autoplot(d.coxph, surv.linetype = 'dashed', surv.colour = 'blue',
+         conf.int.fill = 'dodgerblue3', conf.int.alpha = 0.25, censor = FALSE)
+
+```
+
+
+A weibull survival model can be fit as:
+
+
+```{r}
+weibull_fit  <- survreg(Surv(futime, fustat)~factor(rx) + age , 
+                       data = ovarian, 
+                       dist="weibull",
+                       scale=0)
+summary(weibull_fit)
+
+
+```
+
+
+We discuss these in more detail next time. 
